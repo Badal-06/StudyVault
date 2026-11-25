@@ -46,3 +46,79 @@ test("AI endpoints report missing Gemini configuration without calling the provi
 		else process.env.GEMINI_API_KEY = previousKey;
 	}
 });
+
+test("chat retries a temporary Gemini overload", async () => {
+	const previousKey = process.env.GEMINI_API_KEY;
+	const previousFetch = globalThis.fetch;
+	let attempts = 0;
+	process.env.GEMINI_API_KEY = "test-key";
+	globalThis.fetch = async () => {
+		attempts += 1;
+		if (attempts === 1) {
+			return {
+				ok: false,
+				status: 503,
+				headers: { get: () => "0" },
+				json: async () => ({ error: { message: "Temporarily overloaded" } }),
+			};
+		}
+		return {
+			ok: true,
+			status: 200,
+			json: async () => ({
+				candidates: [{ content: { parts: [{ text: "Try again shortly." }] } }],
+			}),
+		};
+	};
+
+	try {
+		const response = createResponse();
+		await createChatResponse(
+			{ body: { question: "Explain this", mode: "general" } },
+			response,
+		);
+
+		assert.equal(response.statusCode, 200);
+		assert.equal(response.body.answer, "Try again shortly.");
+		assert.equal(attempts, 2);
+	} finally {
+		globalThis.fetch = previousFetch;
+		if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
+		else process.env.GEMINI_API_KEY = previousKey;
+	}
+});
+
+test("chat reports temporary Gemini overload after retries are exhausted", async () => {
+	const previousKey = process.env.GEMINI_API_KEY;
+	const previousFetch = globalThis.fetch;
+	const previousConsoleError = console.error;
+	let attempts = 0;
+	process.env.GEMINI_API_KEY = "test-key";
+	globalThis.fetch = async () => {
+		attempts += 1;
+		return {
+			ok: false,
+			status: 503,
+			headers: { get: () => "0" },
+			json: async () => ({ error: { message: "Temporarily overloaded" } }),
+		};
+	};
+	console.error = () => {};
+
+	try {
+		const response = createResponse();
+		await createChatResponse(
+			{ body: { question: "Explain this", mode: "general" } },
+			response,
+		);
+
+		assert.equal(response.statusCode, 503);
+		assert.match(response.body.message, /temporarily busy/i);
+		assert.equal(attempts, 3);
+	} finally {
+		globalThis.fetch = previousFetch;
+		console.error = previousConsoleError;
+		if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
+		else process.env.GEMINI_API_KEY = previousKey;
+	}
+});

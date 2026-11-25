@@ -5,6 +5,8 @@ const MAX_EMBEDDING_INPUTS = 24;
 const MAX_EMBEDDING_TEXT_LENGTH = 6000;
 const MAX_CONTEXT_CHARS = 18000;
 const MAX_HISTORY_MESSAGES = 12;
+const MAX_TRANSIENT_RETRIES = 2;
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 const getApiKey = (res) => {
 	const apiKey = process.env.GEMINI_API_KEY;
@@ -19,22 +21,46 @@ const getApiKey = (res) => {
 };
 
 const requestGemini = async (url, apiKey, body) => {
-	const response = await fetch(url, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			"x-goog-api-key": apiKey,
-		},
-		body: JSON.stringify(body),
-	});
+	for (let attempt = 0; ; attempt += 1) {
+		const response = await fetch(url, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"x-goog-api-key": apiKey,
+			},
+			body: JSON.stringify(body),
+		});
 
-	const result = await response.json();
-	if (!response.ok) {
-		const message = result.error?.message || `Gemini API request failed (${response.status})`;
-		throw new Error(message);
+		const result = await response.json();
+		if (response.ok) {
+			return result;
+		}
+
+		const error = new Error(
+			result.error?.message || `Gemini API request failed (${response.status})`,
+		);
+		error.status = response.status;
+		if (!RETRYABLE_STATUSES.has(response.status) || attempt >= MAX_TRANSIENT_RETRIES) {
+			throw error;
+		}
+
+		const retryAfterHeader = response.headers.get("retry-after");
+		const retryAfterSeconds = retryAfterHeader === null ? Number.NaN : Number(retryAfterHeader);
+		const delay = Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0
+			? Math.min(retryAfterSeconds * 1000, 5000)
+			: 1000 * (attempt + 1);
+		await new Promise((resolve) => setTimeout(resolve, delay));
 	}
+};
 
-	return result;
+const getGeminiFailure = (error, fallbackMessage) => {
+	if (error.status === 429) {
+		return { status: 429, message: "Gemini is rate-limited. Wait a little and try again." };
+	}
+	if ([500, 502, 503, 504].includes(error.status)) {
+		return { status: 503, message: "Gemini is temporarily busy. Please try again shortly." };
+	}
+	return { status: 502, message: fallbackMessage };
 };
 
 export const createEmbeddings = async (req, res) => {
@@ -75,7 +101,11 @@ export const createEmbeddings = async (req, res) => {
 		return res.json({ embeddings: result.embeddings.map((embedding) => embedding.values) });
 	} catch (error) {
 		console.error("Gemini embedding request failed:", error.message);
-		return res.status(502).json({ message: "Unable to create study-material embeddings. Check the Gemini API key and quota." });
+		const failure = getGeminiFailure(
+			error,
+			"Unable to create study-material embeddings. Check the Gemini API key and quota.",
+		);
+		return res.status(failure.status).json({ message: failure.message });
 	}
 };
 
@@ -168,6 +198,10 @@ export const createChatResponse = async (req, res) => {
 		return res.json({ answer });
 	} catch (error) {
 		console.error("Gemini chat request failed:", error.message);
-		return res.status(502).json({ message: "Unable to generate a reply. Check the Gemini API key and quota." });
+		const failure = getGeminiFailure(
+			error,
+			"Unable to generate a reply. Check the Gemini API key and quota.",
+		);
+		return res.status(failure.status).json({ message: failure.message });
 	}
 };
