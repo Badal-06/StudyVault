@@ -88,10 +88,57 @@ test("chat retries a temporary Gemini overload", async () => {
 	}
 });
 
+test("chat falls back to Flash-Lite after the primary model stays overloaded", async () => {
+	const previousKey = process.env.GEMINI_API_KEY;
+	const previousFetch = globalThis.fetch;
+	const previousConsoleWarn = console.warn;
+	const requests = [];
+	process.env.GEMINI_API_KEY = "test-key";
+	globalThis.fetch = async (url) => {
+		requests.push(url);
+		if (url.includes("gemini-3.8-flash")) {
+			return {
+				ok: false,
+				status: 503,
+				headers: { get: () => "0" },
+				json: async () => ({ error: { message: "Temporarily overloaded" } }),
+			};
+		}
+		return {
+			ok: true,
+			status: 200,
+			json: async () => ({
+				candidates: [{ content: { parts: [{ text: "Fallback answer." }] } }],
+			}),
+		};
+	};
+	console.warn = () => {};
+
+	try {
+		const response = createResponse();
+		await createChatResponse(
+			{ body: { question: "Explain this", mode: "general" } },
+			response,
+		);
+
+		assert.equal(response.statusCode, 200);
+		assert.equal(response.body.answer, "Fallback answer.");
+		assert.equal(requests.length, 4);
+		assert.ok(requests.slice(0, 3).every((url) => url.includes("gemini-3.8-flash")));
+		assert.ok(requests[3].includes("gemini-3.1-flash-lite"));
+	} finally {
+		globalThis.fetch = previousFetch;
+		console.warn = previousConsoleWarn;
+		if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
+		else process.env.GEMINI_API_KEY = previousKey;
+	}
+});
+
 test("chat reports temporary Gemini overload after retries are exhausted", async () => {
 	const previousKey = process.env.GEMINI_API_KEY;
 	const previousFetch = globalThis.fetch;
 	const previousConsoleError = console.error;
+	const previousConsoleWarn = console.warn;
 	let attempts = 0;
 	process.env.GEMINI_API_KEY = "test-key";
 	globalThis.fetch = async () => {
@@ -104,6 +151,7 @@ test("chat reports temporary Gemini overload after retries are exhausted", async
 		};
 	};
 	console.error = () => {};
+	console.warn = () => {};
 
 	try {
 		const response = createResponse();
@@ -114,10 +162,11 @@ test("chat reports temporary Gemini overload after retries are exhausted", async
 
 		assert.equal(response.statusCode, 503);
 		assert.match(response.body.message, /temporarily busy/i);
-		assert.equal(attempts, 3);
+		assert.equal(attempts, 6);
 	} finally {
 		globalThis.fetch = previousFetch;
 		console.error = previousConsoleError;
+		console.warn = previousConsoleWarn;
 		if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
 		else process.env.GEMINI_API_KEY = previousKey;
 	}

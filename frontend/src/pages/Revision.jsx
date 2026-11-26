@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { useSelector } from 'react-redux'
 import SideBar from '../components/SideBar'
 import TopBar from '../components/TopBar'
@@ -9,6 +9,8 @@ import {
   retrieveStudyContext,
 } from '../features/revision/studyMaterialService.js'
 import './Revision.css'
+
+const ReactMarkdown = lazy(() => import('react-markdown'))
 
 const initialMessages = {
   study: [{
@@ -26,6 +28,25 @@ const initialMessages = {
 const getErrorMessage = (error) => (
   error.response?.data?.message || error.message || 'Something went wrong. Please try again.'
 )
+
+const getSourceGroups = (chunks) => {
+  const groups = new Map()
+  chunks.forEach((chunk, index) => {
+    const key = JSON.stringify([chunk.title, chunk.source, chunk.location])
+    const group = groups.get(key)
+    if (group) {
+      group.ids.push(`S${index + 1}`)
+    } else {
+      groups.set(key, {
+        ids: [`S${index + 1}`],
+        title: chunk.title,
+        source: chunk.source,
+        location: chunk.location,
+      })
+    }
+  })
+  return [...groups.values()]
+}
 
 const Revision = () => {
   const user = useSelector((state) => state.auth.user)
@@ -141,12 +162,7 @@ const Revision = () => {
           .map(({ role, text }) => ({ role: role === 'user' ? 'user' : 'model', text })),
         context,
       })
-      const sources = matchedChunks.map((chunk, index) => ({
-        id: `S${index + 1}`,
-        title: chunk.title,
-        source: chunk.source,
-        location: chunk.location,
-      }))
+      const sources = getSourceGroups(matchedChunks)
       setMessages((current) => ({
         ...current,
         [mode]: [...current[mode], { role: 'model', text: answer, sources }],
@@ -267,13 +283,17 @@ const Revision = () => {
                     >
                       <span className="revision-message-avatar">{message.role === 'user' ? 'You' : 'AI'}</span>
                       <div className="revision-message-body">
-                        <div className="revision-message-text">{message.text}</div>
+                        <div className="revision-message-text">
+                          <Suspense fallback={<span>Formatting answer…</span>}>
+                            <ReactMarkdown>{message.text}</ReactMarkdown>
+                          </Suspense>
+                        </div>
                         {message.sources?.length > 0 && (
                           <div className="revision-citations">
                             <strong>Retrieved sources</strong>
                             {message.sources.map((source) => (
-                              <span key={source.id}>
-                                <b>[{source.id}]</b> {source.title}
+                              <span key={`${source.title}-${source.location}-${source.source}`}>
+                                <b>{source.ids.map((id) => `[${id}]`).join(', ')}</b> {source.title}
                                 {source.location ? ` · ${source.location}` : ''}
                                 <small> · {source.source}</small>
                               </span>
