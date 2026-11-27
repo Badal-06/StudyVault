@@ -48,10 +48,18 @@ const GoogleLogin = () => {
   )
 }
 
-const GoogleLoginPage = () => (
-  <GoogleOAuthProvider clientId={import.meta.env.VITE_CLIENT_ID}>
-    <GoogleLogin />
-  </GoogleOAuthProvider>
-)
+const GoogleLoginPage = () => {
+  const clientId = import.meta.env.VITE_CLIENT_ID
+
+  if (!clientId) {
+    return <p role="alert">Google sign-in is not configured. Set VITE_CLIENT_ID in the frontend deployment environment and redeploy.</p>
+  }
+
+  return (
+    <GoogleOAuthProvider clientId={clientId}>
+      <GoogleLogin />
+    </GoogleOAuthProvider>
+  )
+}
 
 export default GoogleLoginPage
