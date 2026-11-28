@@ -8,6 +8,7 @@ import {
   indexStudyMaterials,
   retrieveStudyContext,
 } from '../features/revision/studyMaterialService.js'
+import { mergeConversationContext } from '../features/revision/ragUtils.js'
 import './Revision.css'
 
 const ReactMarkdown = lazy(() => import('react-markdown'))
@@ -32,7 +33,7 @@ const getErrorMessage = (error) => (
 const getSourceGroups = (chunks) => {
   const groups = new Map()
   chunks.forEach((chunk, index) => {
-    const key = JSON.stringify([chunk.title, chunk.source, chunk.location])
+    const key = JSON.stringify([chunk.title, chunk.source, chunk.location, chunk.page])
     const group = groups.get(key)
     if (group) {
       group.ids.push(`S${index + 1}`)
@@ -42,6 +43,7 @@ const getSourceGroups = (chunks) => {
         title: chunk.title,
         source: chunk.source,
         location: chunk.location,
+        page: chunk.page,
       })
     }
   })
@@ -148,10 +150,16 @@ const Revision = () => {
       const matchedChunks = mode === 'study'
         ? await retrieveStudyContext(userId, question)
         : []
-      const context = matchedChunks.map((chunk, index) => ({
+      const contextChunks = mode === 'study'
+        ? mergeConversationContext(previousMessages, matchedChunks)
+        : []
+      const context = contextChunks.map((chunk, index) => ({
         id: `S${index + 1}`,
         title: chunk.title,
-        text: `${chunk.location ? `${chunk.location}\n` : ''}${chunk.text}`,
+        text: `${[
+          chunk.location,
+          chunk.page ? `Page ${chunk.page}` : null,
+        ].filter(Boolean).join('\n')}${chunk.location || chunk.page ? '\n' : ''}${chunk.text}`,
       }))
       const answer = await createAiReply({
         mode,
@@ -162,10 +170,10 @@ const Revision = () => {
           .map(({ role, text }) => ({ role: role === 'user' ? 'user' : 'model', text })),
         context,
       })
-      const sources = getSourceGroups(matchedChunks)
+      const sources = getSourceGroups(contextChunks)
       setMessages((current) => ({
         ...current,
-        [mode]: [...current[mode], { role: 'model', text: answer, sources }],
+        [mode]: [...current[mode], { role: 'model', text: answer, sources, context: contextChunks }],
       }))
     } catch (error) {
       setChatError(getErrorMessage(error))
@@ -241,7 +249,7 @@ const Revision = () => {
                   <strong>Study mode</strong>
                   <span>
                     Files are read in your browser. Extracted text is sent to Gemini for embeddings;
-                    the searchable index stays in this browser.
+                    the searchable index stays in this browser. Refresh the index to add PDF page references.
                   </span>
                   {indexProgress && (
                     <span className="revision-progress">
@@ -292,9 +300,10 @@ const Revision = () => {
                           <div className="revision-citations">
                             <strong>Retrieved sources</strong>
                             {message.sources.map((source) => (
-                              <span key={`${source.title}-${source.location}-${source.source}`}>
+                              <span key={`${source.title}-${source.location}-${source.source}-${source.page ?? ''}`}>
                                 <b>{source.ids.map((id) => `[${id}]`).join(', ')}</b> {source.title}
                                 {source.location ? ` · ${source.location}` : ''}
+                                {source.page ? ` · Page ${source.page}` : ''}
                                 <small> · {source.source}</small>
                               </span>
                             ))}
