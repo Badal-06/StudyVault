@@ -8,6 +8,7 @@ import {
   indexStudyMaterials,
   retrieveStudyContext,
 } from '../features/revision/studyMaterialService.js'
+import { loadRevisionChat, saveRevisionChat } from '../features/revision/chatStorage.js'
 import { mergeConversationContext } from '../features/revision/ragUtils.js'
 import './Revision.css'
 
@@ -57,6 +58,7 @@ const Revision = () => {
   const userId = user?.sub
   const [mode, setMode] = useState('study')
   const [messages, setMessages] = useState(initialMessages)
+  const [messagesOwner, setMessagesOwner] = useState(null)
   const [draft, setDraft] = useState('')
   const [indexInfo, setIndexInfo] = useState({ chunkCount: 0, documentCount: 0 })
   const [indexOwner, setIndexOwner] = useState(null)
@@ -67,10 +69,35 @@ const Revision = () => {
   const [indexSkipped, setIndexSkipped] = useState([])
   const [isSending, setIsSending] = useState(false)
   const [chatError, setChatError] = useState('')
+  const [chatStorageError, setChatStorageError] = useState('')
   const messagesEndRef = useRef(null)
-  const visibleMessages = messages[mode]
+  const visibleMessages = messagesOwner === userId ? messages[mode] : initialMessages[mode]
   const isLoadingIndex = Boolean(userId && indexOwner !== userId)
   const visibleIndexInfo = indexOwner === userId ? indexInfo : { chunkCount: 0, documentCount: 0 }
+
+  useEffect(() => {
+    if (!userId) return
+
+    try {
+      setMessages(loadRevisionChat(userId) ?? initialMessages)
+      setMessagesOwner(userId)
+      setChatStorageError('')
+    } catch (error) {
+      setMessagesOwner(null)
+      setChatStorageError(error.message || 'Unable to load saved chat.')
+    }
+  }, [userId])
+
+  useEffect(() => {
+    if (!userId || messagesOwner !== userId) return
+
+    try {
+      saveRevisionChat(userId, messages)
+      setChatStorageError('')
+    } catch (error) {
+      setChatStorageError(`Chat is not being saved on this device: ${error.message}`)
+    }
+  }, [messages, messagesOwner, userId])
 
   useEffect(() => {
     let isCurrent = true
@@ -135,7 +162,7 @@ const Revision = () => {
   const handleSubmit = async (event) => {
     event.preventDefault()
     const question = draft.trim()
-    if (!question || isSending) return
+    if (!question || isSending || !userId || messagesOwner !== userId) return
 
     setDraft('')
     setChatError('')
@@ -183,11 +210,14 @@ const Revision = () => {
   }
 
   const handleClearChat = () => {
+    const currentMessages = messagesOwner === userId ? messages : initialMessages
     setMessages((current) => ({
-      ...current,
+      ...(messagesOwner === userId ? current : currentMessages),
       [mode]: [initialMessages[mode][0]],
     }))
+    if (userId) setMessagesOwner(userId)
     setChatError('')
+    setChatStorageError('')
   }
 
   return (
@@ -319,6 +349,9 @@ const Revision = () => {
                 </div>
 
                 {chatError && <p className="revision-error revision-chat-error" role="alert">{chatError}</p>}
+                {chatStorageError && (
+                  <p className="revision-error revision-chat-error" role="alert">{chatStorageError}</p>
+                )}
 
                 <form className="revision-composer" onSubmit={handleSubmit}>
                   <textarea
@@ -336,9 +369,12 @@ const Revision = () => {
                     }}
                     maxLength={2000}
                     rows={2}
-                    disabled={isSending || !userId}
+                    disabled={isSending || !userId || messagesOwner !== userId}
                   />
-                  <button type="submit" disabled={isSending || !draft.trim() || !userId}>
+                  <button
+                    type="submit"
+                    disabled={isSending || !draft.trim() || !userId || messagesOwner !== userId}
+                  >
                     {isSending ? 'Sending…' : 'Send'}
                   </button>
                 </form>
